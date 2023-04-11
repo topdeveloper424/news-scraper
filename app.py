@@ -58,6 +58,24 @@ sched.start()
 def hello():
     return "Hello, World!"
 
+@app.route('/data', methods=['GET'])
+def get_data():
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 10))
+    offset = (page - 1) * per_page
+    with app.app_context():
+        total_count = db.session.query(func.count(NewsData.id)).scalar()
+        products = NewsData.query.offset(offset).limit(per_page).all()
+
+        response = {
+            'page': page,
+            'per_page': per_page,
+            'total_count': total_count,
+            'newsdata': [product.to_dict() for product in products]  # Serialize the products to a JSON-serializable format
+        }
+
+        return jsonify(response)
+
 @app.route('/wsj', methods=['GET'])
 def get_wsj():
     page = int(request.args.get('page', 1))
