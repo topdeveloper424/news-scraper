@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, render_template
 from flask import jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import datetime
@@ -50,13 +50,21 @@ def cron_func():
     scrape_wsp()
 
 sched = BackgroundScheduler(daemon=True)
-sched.add_job(cron_func,'interval',minutes=60, next_run_time=datetime.datetime.now())
+sched.add_job(cron_func,'interval',minutes=60)
 sched.start()
 
+@app.template_filter('datetime_format')
+def datetime_format(value, format='%Y-%m-%d %H:%M:%S'):
+    return value.strftime(format)
 
 @app.route('/')
 def hello():
-    return "Hello, World!"
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 9))
+    offset = (page - 1) * per_page
+    total_count = db.session.query(func.count(NewsData.id)).scalar()
+    products = NewsData.query.offset(offset).limit(per_page).all()
+    return render_template('home.html', items=products, total_items=total_count, current_page=page, items_per_page=per_page)
 
 @app.route('/data', methods=['GET'])
 def get_data():
@@ -65,7 +73,7 @@ def get_data():
     offset = (page - 1) * per_page
     with app.app_context():
         total_count = db.session.query(func.count(NewsData.id)).scalar()
-        products = NewsData.query.offset(offset).limit(per_page).all()
+        products = NewsData.query.offset(offset).order_by(NewsData.pub_datetime.desc()).limit(per_page).all()
 
         response = {
             'page': page,
