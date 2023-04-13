@@ -51,11 +51,24 @@ def cron_func():
 
 sched = BackgroundScheduler(daemon=True)
 sched.add_job(cron_func,'interval',minutes=60)
+#sched.add_job(cron_func,'interval',minutes=60, next_run_time=datetime.datetime.now())
 sched.start()
 
 @app.template_filter('datetime_format')
 def datetime_format(value, format='%Y-%m-%d %H:%M:%S'):
     return value.strftime(format)
+
+@app.template_filter('max_filter')
+def max_filter(a, b):
+    return max(a, b)
+
+@app.template_filter('min_filter')
+def min_filter(a, b):
+    return min(a, b)
+
+@app.template_filter('min_filter')
+def min_filter(a, b):
+    return min(a, b)
 
 @app.route('/')
 def hello():
@@ -63,17 +76,17 @@ def hello():
     per_page = int(request.args.get('per_page', 9))
     offset = (page - 1) * per_page
     total_count = db.session.query(func.count(NewsData.id)).scalar()
-    products = NewsData.query.offset(offset).limit(per_page).all()
+    products = NewsData.query.order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
     return render_template('home.html', items=products, total_items=total_count, current_page=page, items_per_page=per_page)
 
 @app.route('/data', methods=['GET'])
 def get_data():
     page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 10))
+    per_page = int(request.args.get('per_page', 9))
     offset = (page - 1) * per_page
     with app.app_context():
         total_count = db.session.query(func.count(NewsData.id)).scalar()
-        products = NewsData.query.offset(offset).order_by(NewsData.pub_datetime.desc()).limit(per_page).all()
+        products = NewsData.query.order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
 
         response = {
             'page': page,
@@ -91,7 +104,7 @@ def get_wsj():
     offset = (page - 1) * per_page
     with app.app_context():
         total_count = db.session.query(func.count(NewsData.id)).filter(NewsData.website == WEBSITES.WSJ).scalar()
-        products = NewsData.query.filter(NewsData.website == WEBSITES.WSJ).offset(offset).limit(per_page).all()
+        products = NewsData.query.filter(NewsData.website == WEBSITES.WSJ).order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
 
         response = {
             'page': page,
@@ -109,7 +122,7 @@ def get_wsp():
     offset = (page - 1) * per_page
     with app.app_context():
         total_count = db.session.query(func.count(NewsData.id)).filter(NewsData.website == WEBSITES.WSP).scalar()
-        products = NewsData.query.filter(NewsData.website == WEBSITES.WSP).offset(offset).limit(per_page).all()
+        products = NewsData.query.filter(NewsData.website == WEBSITES.WSP).order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
 
         response = {
             'page': page,
@@ -134,7 +147,7 @@ def scrape_wsj():
     start_date = "2023/04/01".replace("/","%2F")
     today_date = datetime.datetime.now().date().strftime("%Y/%m/%d")
     today_date = today_date.replace("/","%2F")
-    encoded_url = url.format("WSJ%20NEWS%20EXCLUSIVE",start_date, today_date)
+    encoded_url = url.format("",start_date, today_date)
     page_num = 1
     break_flag = False
     with app.app_context():
@@ -164,10 +177,10 @@ def scrape_wsj():
             print(ids)
             threads = min(10, len(ids))
             with ThreadPoolExecutor(max_workers=threads) as executor:
-                grab_results = executor.map(scrape_page, ids)
+                grab_results = executor.map(scrape_wsj_page, ids)
                 for result in grab_results:
                     if result:
-                        if latest_date is not None and latest_date.pub_datetime <= result["datetime"]:
+                        if latest_date is not None and latest_date.pub_datetime >= result["datetime"]:
                             break_flag = True
                             break
                         else:
@@ -182,7 +195,7 @@ def scrape_wsj():
 
             page_num += 1
 
-def scrape_page(data_id):
+def scrape_wsj_page(data_id):
     news = None
     try:
         headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36", "Scheme":"https"}
@@ -224,53 +237,71 @@ def scrape_wsp():
     break_flag = False
     with app.app_context():
         while True:
-            form_data = {"requests":[{"indexName":"crawler_wapocrawl_sortby_publish_date","params":"analytics=true&clickAnalytics=true&distinct=true&facetFilters=%5B%5B%5D%2C%5B%5D%5D&facets=%5B%5D&filters=publish_date_timestamp%3A"+str(start_timestamp)+"%20TO%20"+str(today_timestamp)+"&highlightPostTag=%3C%2Fais-highlight-0000000000%3E&highlightPreTag=%3Cais-highlight-0000000000%3E&hitsPerPage=50&page="+str(page_num)+"&query=exclusive%20news&tagFilters="}]}
+            form_data = {"requests":[{"indexName":"crawler_wapocrawl_sortby_publish_date","params":"analytics=true&clickAnalytics=true&distinct=true&facetFilters=%5B%5B%5D%2C%5B%5D%5D&facets=%5B%5D&filters=publish_date_timestamp%3A"+str(start_timestamp)+"%20TO%20"+str(today_timestamp)+"&highlightPostTag=%3C%2Fais-highlight-0000000000%3E&highlightPreTag=%3Cais-highlight-0000000000%3E&hitsPerPage=50&page="+str(page_num)+"&query=&tagFilters="}]}
             response = requests.post(url, data= json.dumps(form_data), headers=headers).json()
             articles = response["results"][0]["hits"]
             if len(articles) == 0:
                 break
+            threads = min(10, len(articles))
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                grab_results = executor.map(scrape_wsp_page, articles)
+                grab_results = [x for x in grab_results if x is not None]
+                if len(grab_results) > 1:
+                    grab_results = sorted(grab_results, key=lambda x: x['publish_date_timestamp'], reverse=True)
+                for article in grab_results:
+                    if article:
+                        try:
+                            content = "<div>"+article["content"]+"</div>"
+                            content_html = BeautifulSoup(content, 'html.parser')
+                            content_text = content_html.text
+                            if len(content_text) > 500:
+                                content_text = content_text[:500] + "..."
+                            dt = datetime.datetime.fromtimestamp(article["publish_date_timestamp"] / 1000)
+                            
+                            if latest_date is not None and latest_date.pub_datetime >= dt:
+                                break_flag = True
+                                break
 
-            for article in articles:
+                            author = ""
+                            try:
+                                author = article["author"]
+                                author = author.strip()
+                            except Exception:
+                                pass
 
-                try:
-                    content = "<div>"+article["content"]+"</div>"
-                    content_html = BeautifulSoup(content, 'html.parser')
-                    content_text = content_html.text
-                    if len(content_text) > 500:
-                        content_text = content_text[:500] + "..."
-                    dt = datetime.datetime.fromtimestamp(article["publish_date_timestamp"] / 1000)
-                    
-                    if latest_date is not None and latest_date.pub_datetime <= dt:
-                        break_flag = True
-                        break
-
-                    author = ""
-                    try:
-                        author = article["author"]
-                        author = author.strip()
-                    except Exception:
-                        pass
-
-                    news = {
-                        "headline": article["title"],
-                        "url" : article["url"],
-                        "summary" : content_text,
-                        "image_link": article["thumbnail"],
-                        "author": author,
-                        "datetime": dt
-                    }
-                    print(news)
-                    news_data = NewsData(website=WEBSITES.WSP, headline=news["headline"], url=news["url"] , summary=news["summary"], image_link=news["image_link"], author=news["author"], pub_datetime=news["datetime"])
-                    db.session.add(news_data)
-                    db.session.flush()
-                except TimeoutError:
-                    pass
+                            news = {
+                                "headline": article["title"],
+                                "url" : article["url"],
+                                "summary" : content_text,
+                                "image_link": article["thumbnail"],
+                                "author": author,
+                                "datetime": dt
+                            }
+                            print(news)
+                            news_data = NewsData(website=WEBSITES.WSP, headline=news["headline"], url=news["url"] , summary=news["summary"], image_link=news["image_link"], author=news["author"], pub_datetime=news["datetime"])
+                            db.session.add(news_data)
+                            db.session.flush()
+                        except TimeoutError:
+                            pass
 
             db.session.commit()
             if break_flag:
                 break
 
             page_num += 1
+
+
+def scrape_wsp_page(article):
+    try:
+        headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36", "Scheme":"https"}
+        response = requests.get(article["url"], headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        wp_exclusive_label = soup.find("span",{"class":"content-box", "data-qa":"wp-exclusive"})
+        if wp_exclusive_label:
+            return article
+    except Exception:
+        pass
+    return None
 
 
 if __name__ == "__main__":
