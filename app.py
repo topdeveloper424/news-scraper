@@ -17,6 +17,7 @@ db = SQLAlchemy(app)
 class WEBSITES:
     WSJ = "wsj"
     WSP = "wsp"
+    CNN = "cnn"
 
 class NewsData(db.Model):
     __tablename__ = 'news_data'
@@ -48,47 +49,52 @@ def cron_func():
     print("scraping.......")
     scrape_wsj()
     scrape_wsp()
+    scrape_cnn()
 
 sched = BackgroundScheduler(daemon=True)
-sched.add_job(cron_func,'interval',minutes=60)
-#sched.add_job(cron_func,'interval',minutes=60, next_run_time=datetime.datetime.now())
+#sched.add_job(cron_func,'interval',minutes=60)
+sched.add_job(cron_func,'interval',minutes=60, next_run_time=datetime.datetime.now())
 sched.start()
 
 @app.template_filter('datetime_format')
 def datetime_format(value, format='%Y-%m-%d %H:%M:%S'):
     return value.strftime(format)
 
-@app.template_filter('max_filter')
-def max_filter(a, b):
-    return max(a, b)
-
-@app.template_filter('min_filter')
-def min_filter(a, b):
-    return min(a, b)
-
-@app.template_filter('min_filter')
-def min_filter(a, b):
-    return min(a, b)
-
 @app.route('/')
-def hello():
+def home():
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 9))
+    site = request.args.get('site', 'all')
     offset = (page - 1) * per_page
-    total_count = db.session.query(func.count(NewsData.id)).scalar()
-    products = NewsData.query.order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
-    return render_template('home.html', items=products, total_items=total_count, current_page=page, items_per_page=per_page)
+    total_count = 0
+    products = None
+    if site == 'all':
+        total_count = db.session.query(func.count(NewsData.id)).scalar()
+        products = NewsData.query.order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
+    else:
+        total_count = db.session.query(func.count(NewsData.id)).filter(NewsData.website == site).scalar()
+        products = NewsData.query.filter(NewsData.website == site).order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
+    total_pages = total_count // per_page + (total_count % per_page > 0)
+    start_page = max(1, page-2)
+    end_page = min(start_page+4, total_pages)
+    site_names = [value for name, value in vars(WEBSITES).items() if not callable(getattr(WEBSITES, name)) and not name.startswith("__")]
+
+    return render_template('home.html', items=products, total_items=total_count, current_page=page, items_per_page=per_page, total_pages=total_pages,start_page = start_page, end_page=end_page, site_names=site_names, site=site)
 
 @app.route('/data', methods=['GET'])
 def get_data():
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 9))
     offset = (page - 1) * per_page
+    
     with app.app_context():
         total_count = db.session.query(func.count(NewsData.id)).scalar()
         products = NewsData.query.order_by(NewsData.pub_datetime.desc()).offset(offset).limit(per_page).all()
-
+    
+        total_pages = total_count // per_page + (total_count % per_page > 0)
+        
         response = {
+            'total_pages': total_pages,
             'page': page,
             'per_page': per_page,
             'total_count': total_count,
@@ -176,6 +182,7 @@ def scrape_wsj():
                 break
             print(ids)
             threads = min(10, len(ids))
+            is_save = False
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 grab_results = executor.map(scrape_wsj_page, ids)
                 for result in grab_results:
@@ -184,12 +191,17 @@ def scrape_wsj():
                             break_flag = True
                             break
                         else:
-                            print(result)
-                            news_data = NewsData(website=WEBSITES.WSJ, headline=result["headline"], url=result["url"] , summary=result["summary"], image_link=result["image_link"], author=result["author"], pub_datetime=result["datetime"])
-                            db.session.add(news_data)
-                            db.session.flush()
+                            previous_date = datetime.datetime.now() - datetime.timedelta(days=1)
+                            record_count = db.session.query(NewsData).filter(NewsData.website == WEBSITES.WSJ, NewsData.headline == result["headline"], NewsData.pub_datetime > previous_date).count()
+                            if record_count == 0:
+                                print(result)
+                                news_data = NewsData(website=WEBSITES.WSJ, headline=result["headline"], url=result["url"] , summary=result["summary"], image_link=result["image_link"], author=result["author"], pub_datetime=result["datetime"])
+                                db.session.add(news_data)
+                                db.session.flush()
+                                is_save = True
 
-            db.session.commit()
+            if is_save:
+                db.session.commit()
             if break_flag:
                 break
 
@@ -242,12 +254,15 @@ def scrape_wsp():
             articles = response["results"][0]["hits"]
             if len(articles) == 0:
                 break
+
+            is_save = False
             threads = min(10, len(articles))
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 grab_results = executor.map(scrape_wsp_page, articles)
                 grab_results = [x for x in grab_results if x is not None]
                 if len(grab_results) > 1:
                     grab_results = sorted(grab_results, key=lambda x: x['publish_date_timestamp'], reverse=True)
+
                 for article in grab_results:
                     if article:
                         try:
@@ -277,14 +292,19 @@ def scrape_wsp():
                                 "author": author,
                                 "datetime": dt
                             }
-                            print(news)
-                            news_data = NewsData(website=WEBSITES.WSP, headline=news["headline"], url=news["url"] , summary=news["summary"], image_link=news["image_link"], author=news["author"], pub_datetime=news["datetime"])
-                            db.session.add(news_data)
-                            db.session.flush()
+                            previous_date = datetime.datetime.now() - datetime.timedelta(days=1)
+                            record_count = db.session.query(NewsData).filter(NewsData.website == WEBSITES.WSP, NewsData.headline == news["headline"], NewsData.pub_datetime > previous_date).count()
+                            if record_count == 0:
+                                print(news)
+                                news_data = NewsData(website=WEBSITES.WSP, headline=news["headline"], url=news["url"] , summary=news["summary"], image_link=news["image_link"], author=news["author"], pub_datetime=news["datetime"])
+                                db.session.add(news_data)
+                                db.session.flush()
+                                is_save = True
                         except TimeoutError:
                             pass
-
-            db.session.commit()
+            
+            if is_save:
+                db.session.commit()
             if break_flag:
                 break
 
@@ -302,6 +322,72 @@ def scrape_wsp_page(article):
     except Exception:
         pass
     return None
+
+
+def scrape_cnn():
+    latest_date = get_latest_record(WEBSITES.CNN)
+    start_date = datetime.datetime(2023, 4, 1)
+
+    headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36", "Scheme":"https"}
+    url = "https://search.api.cnn.com/content?q=&size=50&from={}&page={}&sort=newest&types=article"
+    page_num = 1
+    article_num = 50
+    with app.app_context():
+        while True:
+            from_num = (page_num-1)*article_num
+            article_api = url.format(str(from_num), str(page_num))
+            print(article_api)
+            article_json = requests.get(article_api, headers=headers).json()
+            articles = article_json['result']
+            if len(articles) == 0:
+                break
+            break_flag = False
+            is_save = False
+            for article in articles:
+                modified_date = article['lastModifiedDate']
+                modified_date = modified_date[:-1]
+                pos = modified_date.find(".")
+                if pos != -1:
+                    modified_date = modified_date[:pos]
+                    
+                dt = datetime.datetime.strptime(modified_date, '%Y-%m-%dT%H:%M:%S')
+
+                if latest_date is not None and latest_date.pub_datetime >= dt:
+                    break_flag = True
+                    break
+                if dt < start_date:
+                    break_flag = True
+                    break
+                content_text = article['body']
+                if len(content_text) > 500:
+                    content_text = content_text[:500] + "..."
+                contributers = article['contributors']
+                headline = article["headline"]
+                headline = headline.lower()
+                if headline.startswith("exclusive:"):
+                    news = {
+                        "headline": article["headline"],
+                        "url" : "https://www.cnn.com"+article["path"],
+                        "summary" : content_text,
+                        "image_link": article["thumbnail"],
+                        "author": ", ".join(contributers),
+                        "datetime": dt
+                    }
+                    previous_date = datetime.datetime.now() - datetime.timedelta(days=1)
+                    record_count = db.session.query(NewsData).filter(NewsData.website == WEBSITES.CNN, NewsData.headline == news["headline"], NewsData.pub_datetime > previous_date).count()
+                    if record_count == 0:
+                        print(news)
+                        news_data = NewsData(website=WEBSITES.CNN, headline=news["headline"], url=news["url"] , summary=news["summary"], image_link=news["image_link"], author=news["author"], pub_datetime=news["datetime"])
+                        db.session.add(news_data)
+                        db.session.flush()
+                        is_save = True
+            if is_save:
+                db.session.commit()
+            if break_flag:
+                break
+
+            page_num += 1
+
 
 
 if __name__ == "__main__":
