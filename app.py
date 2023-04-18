@@ -52,8 +52,8 @@ def cron_func():
     scrape_cnn()
 
 sched = BackgroundScheduler(daemon=True)
-#sched.add_job(cron_func,'interval',minutes=60)
-sched.add_job(cron_func,'interval',minutes=60, next_run_time=datetime.datetime.now())
+sched.add_job(cron_func,'interval',minutes=60)
+#sched.add_job(cron_func,'interval',minutes=60, next_run_time=datetime.datetime.now())
 sched.start()
 
 @app.template_filter('datetime_format')
